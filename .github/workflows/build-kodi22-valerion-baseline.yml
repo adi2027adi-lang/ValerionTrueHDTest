@@ -1,0 +1,219 @@
+name: Build Kodi 22 Valerion Baseline
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - '.github/workflows/build-kodi22-valerion-baseline.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  build-armv7:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 360
+    env:
+      KODI_COMMIT: 77395cf42e141000b0475b8d5a54925ad67bfeba
+      KODI_TAG: 22.0b1-Piers
+      ANDROID_NDK_VERSION: 28.2.13676358
+      DEBIAN_FRONTEND: noninteractive
+
+    steps:
+      - name: Free runner disk space
+        shell: bash
+        run: |
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/share/boost || true
+          df -h
+
+      - name: Install Linux build dependencies
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            autoconf bison build-essential ccache curl flex gawk git gperf \
+            lib32stdc++6 lib32z1 lib32z1-dev libcurl4-openssl-dev \
+            unzip zip zlib1g-dev python3
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Android SDK tools
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android SDK build tools and NDK
+        shell: bash
+        run: |
+          yes | sdkmanager --licenses >/dev/null || true
+          sdkmanager 'platform-tools' 'build-tools;37.0.0' "ndk;$ANDROID_NDK_VERSION"
+          sdkmanager 'platforms;android-37.0' || sdkmanager 'platforms;android-37'
+
+      - name: Cache Kodi source tarballs
+        uses: actions/cache@v4
+        with:
+          path: ~/android-tools/xbmc-tarballs
+          key: kodi22-baseline-armv7-tarballs-${{ env.KODI_COMMIT }}
+          restore-keys: |
+            kodi22-android-armv7-tarballs-
+            kodi-android-armv7-tarballs-
+
+      - name: Fetch pinned Kodi 22 Beta 1 source
+        shell: bash
+        run: |
+          set -euxo pipefail
+          mkdir kodi
+          git -C kodi init
+          git -C kodi remote add origin https://github.com/xbmc/xbmc.git
+          git -C kodi fetch --depth=1 origin "$KODI_COMMIT"
+          git -C kodi checkout --detach FETCH_HEAD
+          test "$(git -C kodi rev-parse HEAD)" = "$KODI_COMMIT"
+          git -C kodi rev-parse HEAD | tee kodi-upstream-commit.txt
+          printf '%s\n' "$KODI_TAG" | tee kodi-upstream-tag.txt
+          grep -E 'VERSION_MAJOR|VERSION_MINOR|VERSION_TAG|VERSION_CODE|APP_PACKAGE' kodi/version.txt
+
+      - name: Apply ONLY package/name changes
+        shell: bash
+        run: |
+          set -euxo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          root = Path("kodi")
+          version = root / "version.txt"
+          strings = root / "tools/android/packaging/xbmc/strings.xml.in"
+
+          def replace_once(path, old, new, label):
+              text = path.read_text(encoding="utf-8")
+              count = text.count(old)
+              if count != 1:
+                  raise RuntimeError(f"{label}: expected exactly 1 match in {path}, found {count}")
+              path.write_text(text.replace(old, new, 1), encoding="utf-8")
+              print("patched:", label)
+
+          replace_once(
+              version,
+              "APP_PACKAGE org.xbmc.kodi\n",
+              "APP_PACKAGE org.xbmc.kodi.valerionbaseline\n",
+              "separate Android package",
+          )
+
+          replace_once(
+              strings,
+              '    <string name="app_name">@APP_NAME@</string>\n',
+              '    <string name="app_name">Kodi 22 Valerion Baseline</string>\n',
+              "app label",
+          )
+
+          replace_once(
+              strings,
+              '    <string name="search_hint">@APP_NAME@</string>\n',
+              '    <string name="search_hint">Kodi 22 Valerion Baseline</string>\n',
+              "search label",
+          )
+          PY
+
+          # Safety check: this baseline MUST NOT modify any audio source file.
+          test -z "$(git -C kodi diff --name-only | grep -E 'AudioEngine|AESink|AUDIOTRACK' || true)"
+          echo "Changed files:"
+          git -C kodi diff --name-only
+          git -C kodi diff --check
+          git -C kodi diff > valerion-baseline-applied.patch
+
+          grep '^APP_PACKAGE ' kodi/version.txt
+          grep 'Kodi 22 Valerion Baseline' kodi/tools/android/packaging/xbmc/strings.xml.in
+
+      - name: Create disposable APK signing key
+        shell: bash
+        run: |
+          set -euxo pipefail
+          mkdir -p "$HOME/.android"
+          keytool -genkeypair -noprompt \
+            -keystore "$HOME/.android/debug.keystore" \
+            -alias androiddebugkey \
+            -dname 'CN=Android Debug,O=Android,C=US' \
+            -keypass android -storepass android \
+            -keyalg RSA -keysize 2048 -validity 10000
+          echo "KODI_ANDROID_STORE_FILE=$HOME/.android/debug.keystore" >> "$GITHUB_ENV"
+          echo 'KODI_ANDROID_KEY_ALIAS=androiddebugkey' >> "$GITHUB_ENV"
+          echo 'KODI_ANDROID_KEY_PASSWORD=android' >> "$GITHUB_ENV"
+          echo 'KODI_ANDROID_STORE_PASSWORD=android' >> "$GITHUB_ENV"
+
+      - name: Configure and build Kodi Android dependencies ARMv7
+        shell: bash
+        run: |
+          set -o pipefail
+          mkdir -p logs "$HOME/android-tools/xbmc-tarballs" "$HOME/android-tools/xbmc-depends"
+          cd kodi/tools/depends
+          ./bootstrap 2>&1 | tee "$GITHUB_WORKSPACE/logs/01-bootstrap.log"
+          ./configure \
+            --with-tarballs="$HOME/android-tools/xbmc-tarballs" \
+            --host=arm-linux-androideabi \
+            --with-sdk-path="$ANDROID_SDK_ROOT" \
+            --with-ndk-path="$ANDROID_SDK_ROOT/ndk/$ANDROID_NDK_VERSION" \
+            --prefix="$HOME/android-tools/xbmc-depends" \
+            2>&1 | tee "$GITHUB_WORKSPACE/logs/02-depends-configure.log"
+          make -j"$(nproc)" 2>&1 | tee "$GITHUB_WORKSPACE/logs/03-depends-build.log"
+
+      - name: Configure Kodi CMake build
+        shell: bash
+        run: |
+          set -o pipefail
+          mkdir -p "$HOME/kodi-build"
+          # BD-J is irrelevant for this Android audio baseline and can break
+          # Android cross-builds when a normal host JDK is detected.
+          make -C kodi/tools/depends/target/cmakebuildsys \
+            BUILD_DIR="$HOME/kodi-build" \
+            CMAKE_EXTRA_ARGUMENTS="-DENABLE_BLURAY_JAR=OFF" \
+            2>&1 | tee logs/04-cmake-configure.log
+
+      - name: Build Kodi and APK
+        shell: bash
+        run: |
+          set -o pipefail
+          make -C "$HOME/kodi-build" -j"$(nproc)" 2>&1 | tee logs/05-kodi-build.log
+          make -C "$HOME/kodi-build" apk 2>&1 | tee logs/06-apk-package.log
+
+      - name: Collect and verify ARMv7 APK
+        shell: bash
+        run: |
+          set -euxo pipefail
+          mkdir -p output
+          mapfile -t apks < <(find "$GITHUB_WORKSPACE/kodi" "$HOME/kodi-build" -type f -name '*.apk' -print | sort -u)
+          if [ "${#apks[@]}" -eq 0 ]; then
+            echo 'No APK was produced.' >&2
+            exit 1
+          fi
+
+          printf '%s\n' "${apks[@]}" | tee logs/07-apk-list.log
+
+          n=0
+          for apk in "${apks[@]}"; do
+            n=$((n+1))
+            out="output/Kodi-22-Valerion-Baseline-armv7-${n}.apk"
+            cp "$apk" "$out"
+            unzip -l "$out" | tee "logs/08-apk-contents-${n}.log" | grep -q 'lib/armeabi-v7a/'
+          done
+
+      - name: Upload installable baseline APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: Kodi-22-Valerion-Baseline-ARMv7
+          path: output/*.apk
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload baseline build diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Kodi-22-Valerion-Baseline-build-diagnostics
+          path: |
+            kodi-upstream-commit.txt
+            kodi-upstream-tag.txt
+            valerion-baseline-applied.patch
+            logs/
+          if-no-files-found: warn
+          retention-days: 14
