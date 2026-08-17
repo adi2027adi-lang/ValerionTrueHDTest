@@ -1,0 +1,170 @@
+name: Build Kodi Valerion DTS-HD Tunnel Test
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - '.github/workflows/build-kodi-valerion-dts-tunnel.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  build-armv7:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 360
+    env:
+      KODI_COMMIT: 9c56bf593441a6c246fdc6931177e71f349ee2bc
+      ANDROID_NDK_VERSION: 28.2.13676358
+      DEBIAN_FRONTEND: noninteractive
+
+    steps:
+      - name: Free runner disk space
+        shell: bash
+        run: |
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/share/boost || true
+          df -h
+
+      - name: Install Linux build dependencies
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            autoconf bison build-essential ccache curl flex gawk git gperf \
+            lib32stdc++6 lib32z1 lib32z1-dev libcurl4-openssl-dev \
+            unzip zip zlib1g-dev python3
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Android SDK tools
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android SDK build tools and NDK
+        shell: bash
+        run: |
+          yes | sdkmanager --licenses >/dev/null || true
+          sdkmanager 'platform-tools' 'build-tools;37.0.0' "ndk;$ANDROID_NDK_VERSION"
+          sdkmanager 'platforms;android-37.0' || sdkmanager 'platforms;android-37'
+
+      - name: Cache Kodi source tarballs
+        uses: actions/cache@v4
+        with:
+          path: ~/android-tools/xbmc-tarballs
+          key: kodi-android-armv7-tarballs-${{ env.KODI_COMMIT }}
+          restore-keys: |
+            kodi-android-armv7-tarballs-
+
+      - name: Fetch pinned Kodi source
+        shell: bash
+        run: |
+          set -euxo pipefail
+          mkdir kodi
+          git -C kodi init
+          git -C kodi remote add origin https://github.com/xbmc/xbmc.git
+          git -C kodi fetch --depth=1 origin "$KODI_COMMIT"
+          git -C kodi checkout --detach FETCH_HEAD
+          test "$(git -C kodi rev-parse HEAD)" = "$KODI_COMMIT"
+          git -C kodi rev-parse HEAD | tee kodi-upstream-commit.txt
+
+      - name: Apply Valerion DTS-HD tunnel patch
+        shell: bash
+        run: |
+          set -euxo pipefail
+          echo 'IyEvdXNyL2Jpbi9lbnYgcHl0aG9uMwpmcm9tIHBhdGhsaWIgaW1wb3J0IFBhdGgKaW1wb3J0IHN5cwoKUk9PVCA9IFBhdGgoc3lzLmFyZ3ZbMV0gaWYgbGVuKHN5cy5hcmd2KSA+IDEgZWxzZSAiLiIpLnJlc29sdmUoKQpBVURJTyA9IFJPT1QgLyAieGJtYy9jb3Jlcy9BdWRpb0VuZ2luZS9TaW5rcy9BRVNpbmtBVURJT1RSQUNLLmNwcCIKVkVSU0lPTiA9IFJPT1QgLyAidmVyc2lvbi50eHQiClNUUklOR1MgPSBST09UIC8gInRvb2xzL2FuZHJvaWQvcGFja2FnaW5nL3hibWMvc3RyaW5ncy54bWwuaW4iCgoKZGVmIHJlcGxhY2Vfb25jZShwYXRoOiBQYXRoLCBvbGQ6IHN0ciwgbmV3OiBzdHIsIGxhYmVsOiBzdHIpOgogICAgdGV4dCA9IHBhdGgucmVhZF90ZXh0KGVuY29kaW5nPSJ1dGYtOCIpCiAgICBjb3VudCA9IHRleHQuY291bnQob2xkKQogICAgaWYgY291bnQgIT0gMToKICAgICAgICByYWlzZSBSdW50aW1lRXJyb3IoZiJ7bGFiZWx9OiBleHBlY3RlZCBleGFjdGx5IDEgbWF0Y2ggaW4ge3BhdGh9LCBmb3VuZCB7Y291bnR9IikKICAgIHBhdGgud3JpdGVfdGV4dCh0ZXh0LnJlcGxhY2Uob2xkLCBuZXcsIDEpLCBlbmNvZGluZz0idXRmLTgiKQogICAgcHJpbnQoZiJwYXRjaGVkOiB7bGFiZWx9IikKCgojIFNlcGFyYXRlIEFQSyBzbyBzdG9jayBLb2RpIGFuZCB0aGUgTUFUIHRlc3QgcmVtYWluIGluc3RhbGxlZC4KcmVwbGFjZV9vbmNlKAogICAgVkVSU0lPTiwKICAgICJBUFBfUEFDS0FHRSBvcmcueGJtYy5rb2RpXG4iLAogICAgIkFQUF9QQUNLQUdFIG9yZy54Ym1jLmtvZGkudmFsZXJpb25kdHN0dW5uZWxcbiIsCiAgICAic2VwYXJhdGUgQW5kcm9pZCBwYWNrYWdlIiwKKQpyZXBsYWNlX29uY2UoCiAgICBTVFJJTkdTLAogICAgJyAgICA8c3RyaW5nIG5hbWU9ImFwcF9uYW1lIj5AQVBQX05BTUVAPC9zdHJpbmc+XG4nLAogICAgJyAgICA8c3RyaW5nIG5hbWU9ImFwcF9uYW1lIj5Lb2RpIFZhbGVyaW9uIERUUy1IRCBUdW5uZWw8L3N0cmluZz5cbicsCiAgICAiRFRTIHR1bm5lbCBhcHAgbGFiZWwiLAopCnJlcGxhY2Vfb25jZSgKICAgIFNUUklOR1MsCiAgICAnICAgIDxzdHJpbmcgbmFtZT0ic2VhcmNoX2hpbnQiPkBBUFBfTkFNRUA8L3N0cmluZz5cbicsCiAgICAnICAgIDxzdHJpbmcgbmFtZT0ic2VhcmNoX2hpbnQiPktvZGkgVmFsZXJpb24gRFRTLUhEIFR1bm5lbDwvc3RyaW5nPlxuJywKICAgICJEVFMgdHVubmVsIHNlYXJjaCBsYWJlbCIsCikKCiMgVEVTVCAyOiBOZXZlciBhc2sgQW5kcm9pZCBmb3IgRU5DT0RJTkdfRE9MQllfVFJVRUhELiAgSW5zdGVhZCwgbWFrZSBUcnVlSEQgcmVxdWVzdAojIGV4YWN0bHkgdGhlIEFuZHJvaWQgZW5jb2Rpbmcgd2hpY2ggaXMga25vd24gdG8gb3BlbiBzdWNjZXNzZnVsbHkgZm9yIERUUy1IRC4KcmVwbGFjZV9vbmNlKAogICAgQVVESU8sCiAgICAiICAgIGNhc2UgQ0FFU3RyZWFtSW5mbzo6U1RSRUFNX1RZUEVfVFJVRUhEOlxuICAgICAgcmV0dXJuIENKTklBdWRpb0Zvcm1hdDo6RU5DT0RJTkdfRE9MQllfVFJVRUhEO1xuIiwKICAgICIgICAgY2FzZSBDQUVTdHJlYW1JbmZvOjpTVFJFQU1fVFlQRV9UUlVFSEQ6XG4iCiAgICAiICAgICAgQ0xvZzo6TG9nKExPR0lORk8sIFwiVkFMRVJJT05fRFRTX1RVTk5FTDogbWFwcGluZyBUcnVlSEQgdG8gRU5DT0RJTkdfRFRTX0hEXCIpO1xuIgogICAgIiAgICAgIHJldHVybiBDSk5JQXVkaW9Gb3JtYXQ6OkVOQ09ESU5HX0RUU19IRDtcbiIsCiAgICAibWFwIFRydWVIRCB0byBEVFMtSEQgQW5kcm9pZCBlbmNvZGluZyIsCikKCiMgRm9yY2UgdGhlIHJhdyBBbmRyb2lkIHBhY2tlciBwYXRoIGZvciBUcnVlSEQgZXZlbiBpZiBLb2RpJ3MgSUVDIHNpbmsgaXMgc2VsZWN0ZWQuCiMgVGhpcyBhdm9pZHMgRU5DT0RJTkdfSUVDNjE5MzcgYW5kIGRlbGliZXJhdGVseSBleGVyY2lzZXMgdGhlIHNhbWUgcm91dGUgYXMgRFRTLUhEIFJBVy4Kb2xkID0gJycnICBlbHNlCiAgICBtX2luZm8gPSBtX2luZm9faWVjOwoKICBtX2Zvcm1hdCAgICAgID0gZm9ybWF0OwonJycKbmV3ID0gJycnICBlbHNlCiAgICBtX2luZm8gPSBtX2luZm9faWVjOwoKICBpZiAoZm9ybWF0Lm1fZGF0YUZvcm1hdCA9PSBBRV9GTVRfUkFXICYmCiAgICAgIGZvcm1hdC5tX3N0cmVhbUluZm8ubV90eXBlID09IENBRVN0cmVhbUluZm86OlNUUkVBTV9UWVBFX1RSVUVIRCkKICB7CiAgICBtX2luZm8gPSBtX2luZm9fcmF3OwogICAgQ0xvZzo6TG9nKExPR0lORk8sCiAgICAgICAgICAgICAgIlZBTEVSSU9OX0RUU19UVU5ORUw6IFRydWVIRCBmb3JjZWQgb250byBBdWRpb1RyYWNrIFJBVy9EVFMtSEQgcm91dGU7IElFQyBkaXNhYmxlZCIpOwogIH0KCiAgbV9mb3JtYXQgICAgICA9IGZvcm1hdDsKJycnCnJlcGxhY2Vfb25jZShBVURJTywgb2xkLCBuZXcsICJmb3JjZSBUcnVlSEQgb250byBSQVcgRFRTLUhEIHJvdXRlIikKCiMgTWF0Y2ggdGhlIHdvcmtpbmcgRFRTLUhEIFJBVyBBdWRpb1RyYWNrIGNhcnJpZXI6IDcuMSBhdCA0OCBrSHogcmF0aGVyIHRoYW4gVHJ1ZUhEJ3MKIyBuYXRpdmUgQW5kcm9pZCAxOTIga0h6IHJvdXRlLiAgVGhlIHBheWxvYWQgaXRzZWxmIGlzIE5PVCB0cmFuc2NvZGVkIG9yIGRlY29kZWQuCm9sZCA9ICcnJyAgICBpZiAobV9mb3JtYXQubV9zdHJlYW1JbmZvLm1fdHlwZSA9PSBDQUVTdHJlYW1JbmZvOjpTVFJFQU1fVFlQRV9UUlVFSEQpCiAgICB7CiAgICAgIG1fZm9ybWF0Lm1fY2hhbm5lbExheW91dCA9IEFFX0NIX0xBWU9VVF83XzE7CiAgICAgIG1fc2lua19zYW1wbGVSYXRlID0gMTkyMDAwOwogICAgfQonJycKbmV3ID0gJycnICAgIGlmIChtX2Zvcm1hdC5tX3N0cmVhbUluZm8ubV90eXBlID09IENBRVN0cmVhbUluZm86OlNUUkVBTV9UWVBFX1RSVUVIRCkKICAgIHsKICAgICAgbV9mb3JtYXQubV9jaGFubmVsTGF5b3V0ID0gQUVfQ0hfTEFZT1VUXzdfMTsKICAgICAgbV9zaW5rX3NhbXBsZVJhdGUgPSA0ODAwMDsKICAgICAgQ0xvZzo6TG9nKExPR0lORk8sCiAgICAgICAgICAgICAgICAiVkFMRVJJT05fRFRTX1RVTk5FTDogVHJ1ZUhEIHBheWxvYWQgLT4gRFRTLUhEIFJBVyBjYXJyaWVyLCByYXRlPTQ4MDAwIGNoYW5uZWxzPTcuMSBlbmNvZGluZz17fSIsCiAgICAgICAgICAgICAgICBtX2VuY29kaW5nKTsKICAgIH0KJycnCnJlcGxhY2Vfb25jZShBVURJTywgb2xkLCBuZXcsICJ1c2UgRFRTLUhEIFJBVyBjYXJyaWVyIHBhcmFtZXRlcnMgZm9yIFRydWVIRCIpCgojIEFkdmVydGlzZSBUcnVlSEQgd2hlbiAoYW5kIG9ubHkgd2hlbikgdGhlIERUUy1IRCBSQVcgcm91dGUgdmVyaWZpZXMgc3VjY2Vzc2Z1bGx5LgpvbGQgPSAnJycgICAgaWYgKENKTklBdWRpb0Zvcm1hdDo6RU5DT0RJTkdfRFRTX0hEICE9IC0xKQogICAgewogICAgICBpZiAoVmVyaWZ5U2lua0NvbmZpZ3VyYXRpb24oNDgwMDAsIEFFQ2hhbm5lbE1hcFRvQVVESU9UUkFDS0NoYW5uZWxNYXNrKEFFX0NIX0xBWU9VVF83XzEpLAogICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgQ0pOSUF1ZGlvRm9ybWF0OjpFTkNPRElOR19EVFNfSEQsIHRydWUpKQogICAgICB7CiAgICAgICAgQ0xvZzo6TG9nKExPR0RFQlVHLCAiRmlybXdhcmUgaW1wbGVtZW50cyBEVFMtSEQgUkFXIik7CiAgICAgICAgbV9pbmZvLm1fc3RyZWFtVHlwZXMucHVzaF9iYWNrKENBRVN0cmVhbUluZm86OlNUUkVBTV9UWVBFX0RUU0hEKTsKICAgICAgICBtX2luZm8ubV9zdHJlYW1UeXBlcy5wdXNoX2JhY2soQ0FFU3RyZWFtSW5mbzo6U1RSRUFNX1RZUEVfRFRTSERfTUEpOwogICAgICB9CiAgICB9CiAgICBpZiAoQ0pOSUF1ZGlvRm9ybWF0OjpFTkNPRElOR19ET0xCWV9UUlVFSEQgIT0gLTEgJiYgc3VwcG9ydHNfMTkya2h6KQogICAgewogICAgICBpZiAoVmVyaWZ5U2lua0NvbmZpZ3VyYXRpb24oMTkyMDAwLCBBRUNoYW5uZWxNYXBUb0FVRElPVFJBQ0tDaGFubmVsTWFzayhBRV9DSF9MQVlPVVRfN18xKSwKICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIENKTklBdWRpb0Zvcm1hdDo6RU5DT0RJTkdfRE9MQllfVFJVRUhELCB0cnVlKSkKICAgICAgewogICAgICAgIENMb2c6OkxvZyhMT0dERUJVRywgIkZpcm13YXJlIGltcGxlbWVudHMgVHJ1ZUhEIFJBVyIpOwogICAgICAgIG1faW5mby5tX3N0cmVhbVR5cGVzLnB1c2hfYmFjayhDQUVTdHJlYW1JbmZvOjpTVFJFQU1fVFlQRV9UUlVFSEQpOwogICAgICB9CiAgICB9CicnJwpuZXcgPSAnJycgICAgaWYgKENKTklBdWRpb0Zvcm1hdDo6RU5DT0RJTkdfRFRTX0hEICE9IC0xKQogICAgewogICAgICBpZiAoVmVyaWZ5U2lua0NvbmZpZ3VyYXRpb24oNDgwMDAsIEFFQ2hhbm5lbE1hcFRvQVVESU9UUkFDS0NoYW5uZWxNYXNrKEFFX0NIX0xBWU9VVF83XzEpLAogICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgQ0pOSUF1ZGlvRm9ybWF0OjpFTkNPRElOR19EVFNfSEQsIHRydWUpKQogICAgICB7CiAgICAgICAgQ0xvZzo6TG9nKExPR0RFQlVHLCAiRmlybXdhcmUgaW1wbGVtZW50cyBEVFMtSEQgUkFXIik7CiAgICAgICAgbV9pbmZvLm1fc3RyZWFtVHlwZXMucHVzaF9iYWNrKENBRVN0cmVhbUluZm86OlNUUkVBTV9UWVBFX0RUU0hEKTsKICAgICAgICBtX2luZm8ubV9zdHJlYW1UeXBlcy5wdXNoX2JhY2soQ0FFU3RyZWFtSW5mbzo6U1RSRUFNX1RZUEVfRFRTSERfTUEpOwogICAgICAgIG1faW5mby5tX3N0cmVhbVR5cGVzLnB1c2hfYmFjayhDQUVTdHJlYW1JbmZvOjpTVFJFQU1fVFlQRV9UUlVFSEQpOwogICAgICAgIENMb2c6OkxvZyhMT0dJTkZPLAogICAgICAgICAgICAgICAgICAiVkFMRVJJT05fRFRTX1RVTk5FTDogYWR2ZXJ0aXNpbmcgVHJ1ZUhEIGJlY2F1c2UgRFRTLUhEIFJBVyByb3V0ZSBpcyBhdmFpbGFibGUiKTsKICAgICAgfQogICAgfQogICAgQ0xvZzo6TG9nKExPR0lORk8sCiAgICAgICAgICAgICAgIlZBTEVSSU9OX0RUU19UVU5ORUw6IG5hdGl2ZSBFTkNPRElOR19ET0xCWV9UUlVFSEQgcHJvYmUgaW50ZW50aW9uYWxseSBza2lwcGVkIik7CicnJwpyZXBsYWNlX29uY2UoQVVESU8sIG9sZCwgbmV3LCAiYWR2ZXJ0aXNlIFRydWVIRCB0aHJvdWdoIERUUy1IRCBjYXBhYmlsaXR5IikKCiMgQWRkIHByZWNpc2UgZGlhZ25vc3RpY3MgZm9yIHRoZSBhdHRlbXB0ZWQgY2FycmllciBjb25maWd1cmF0aW9uLgpvbGQgPSAnJycgICAgbV9taW5fYnVmZmVyX3NpemUgPSAodW5zaWduZWQgaW50KSBtaW5fYnVmZmVyOwogICAgQ0xvZzo6TG9nKExPR0lORk8sICJNaW5pbXVtIHNpemUgd2UgbmVlZCBmb3Igc3RyZWFtOiB7fSBCeXRlcyIsIG1fbWluX2J1ZmZlcl9zaXplKTsKJycnCm5ldyA9ICcnJyAgICBtX21pbl9idWZmZXJfc2l6ZSA9ICh1bnNpZ25lZCBpbnQpIG1pbl9idWZmZXI7CiAgICBDTG9nOjpMb2coTE9HSU5GTywgIk1pbmltdW0gc2l6ZSB3ZSBuZWVkIGZvciBzdHJlYW06IHt9IEJ5dGVzIiwgbV9taW5fYnVmZmVyX3NpemUpOwogICAgaWYgKG1fZm9ybWF0Lm1fc3RyZWFtSW5mby5tX3R5cGUgPT0gQ0FFU3RyZWFtSW5mbzo6U1RSRUFNX1RZUEVfVFJVRUhEKQogICAgewogICAgICBDTG9nOjpMb2coTE9HSU5GTywKICAgICAgICAgICAgICAgICJWQUxFUklPTl9EVFNfVFVOTkVMOiBnZXRNaW5CdWZmZXJTaXplPXt9IHNhbXBsZVJhdGU9e30gY2hhbm5lbE1hc2s9e30gZW5jb2Rpbmc9e30gd2FudHNJRUM9e30iLAogICAgICAgICAgICAgICAgbWluX2J1ZmZlciwgbV9zaW5rX3NhbXBsZVJhdGUsIGF0Q2hhbm5lbE1hc2ssIG1fZW5jb2RpbmcsCiAgICAgICAgICAgICAgICBtX2luZm8ubV93YW50c0lFQ1Bhc3N0aHJvdWdoID8gMSA6IDApOwogICAgfQonJycKcmVwbGFjZV9vbmNlKEFVRElPLCBvbGQsIG5ldywgIkRUUyB0dW5uZWwgbWluLWJ1ZmZlciBkaWFnbm9zdGljcyIpCgpvbGQgPSAnJycgICAgbV9qbmlBdWRpb0Zvcm1hdCA9IG1fZW5jb2Rpbmc7CiAgICBtX2F0X2puaSA9IENyZWF0ZUF1ZGlvVHJhY2soc3RyZWFtLCBtX3Npbmtfc2FtcGxlUmF0ZSwgYXRDaGFubmVsTWFzaywKICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICBtX2VuY29kaW5nLCBtX21pbl9idWZmZXJfc2l6ZSk7CgogICAgaWYgKCFJc0luaXRpYWxpemVkKCkpCicnJwpuZXcgPSAnJycgICAgbV9qbmlBdWRpb0Zvcm1hdCA9IG1fZW5jb2Rpbmc7CiAgICBpZiAobV9mb3JtYXQubV9zdHJlYW1JbmZvLm1fdHlwZSA9PSBDQUVTdHJlYW1JbmZvOjpTVFJFQU1fVFlQRV9UUlVFSEQpCiAgICB7CiAgICAgIENMb2c6OkxvZyhMT0dJTkZPLAogICAgICAgICAgICAgICAgIlZBTEVSSU9OX0RUU19UVU5ORUw6IGNyZWF0aW5nIERUUy1IRCBBdWRpb1RyYWNrIGZvciB1bnRvdWNoZWQgVHJ1ZUhEIHBheWxvYWQgYXR0ZW1wdD0xIik7CiAgICB9CiAgICBtX2F0X2puaSA9IENyZWF0ZUF1ZGlvVHJhY2soc3RyZWFtLCBtX3Npbmtfc2FtcGxlUmF0ZSwgYXRDaGFubmVsTWFzaywKICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICBtX2VuY29kaW5nLCBtX21pbl9idWZmZXJfc2l6ZSk7CiAgICBpZiAobV9mb3JtYXQubV9zdHJlYW1JbmZvLm1fdHlwZSA9PSBDQUVTdHJlYW1JbmZvOjpTVFJFQU1fVFlQRV9UUlVFSEQpCiAgICB7CiAgICAgIGNvbnN0IGludCBzdGF0ZSA9IG1fYXRfam5pID8gbV9hdF9qbmktPmdldFN0YXRlKCkgOiAtMTsKICAgICAgQ0xvZzo6TG9nKExPR0lORk8sICJWQUxFUklPTl9EVFNfVFVOTkVMOiBBdWRpb1RyYWNrIHN0YXRlPXt9Iiwgc3RhdGUpOwogICAgfQoKICAgIGlmICghSXNJbml0aWFsaXplZCgpKQonJycKcmVwbGFjZV9vbmNlKEFVRElPLCBvbGQsIG5ldywgIkRUUyB0dW5uZWwgQXVkaW9UcmFjayBkaWFnbm9zdGljcyIpCgojIFEwNzE4IHNhZmV0eTogZG8gbm90IGhhbW1lciB0aGUgZW5jb2RlZCBvdXRwdXQgd2l0aCBLb2RpJ3Mgc3RvY2sgMjAwIG1zIHJldHJ5LgpvbGQgPSAnJycgICAgICBlbHNlCiAgICAgIHsKICAgICAgICBpZiAoIXJldHJpZWQpCiAgICAgICAgewogICAgICAgICAgcmV0cmllZCA9IHRydWU7CiAgICAgICAgICBDTG9nOjpMb2coTE9HV0FSTklORywgIkFFU2lua0FVRElPVFJBQ0sgLSBVbmFibGUgdG8gb3BlbiBQVCBkZXZpY2UgLSB3aWxsIHJldHJ5IG9uY2UiKTsKICAgICAgICAgIC8vIFNlZW1zIHRoYXQgc29tZSBkZXZpY2VzIGRvbid0IHByb3Blcmx5IGltcGxlbWVudCBwYXVzZSArIGZsdXNoLCB3aGljaCBkdXJpbmcgc2VlawogICAgICAgICAgLy8gbWlnaHQgb3BlbiB0aGUgZGV2aWNlIHRvbyBmYXN0IC0gbGV0J3MgcmV0cnkKICAgICAgICAgIHVzbGVlcCgyMDAgKiAxMDAwKTsKICAgICAgICAgIGNvbnRpbnVlOwogICAgICAgIH0KICAgICAgfQonJycKbmV3ID0gJycnICAgICAgZWxzZQogICAgICB7CiAgICAgICAgaWYgKG1fZm9ybWF0Lm1fc3RyZWFtSW5mby5tX3R5cGUgPT0gQ0FFU3RyZWFtSW5mbzo6U1RSRUFNX1RZUEVfVFJVRUhEKQogICAgICAgIHsKICAgICAgICAgIENMb2c6OkxvZyhMT0dFUlJPUiwKICAgICAgICAgICAgICAgICAgICAiVkFMRVJJT05fRFRTX1RVTk5FTDogQXVkaW9UcmFjayBpbml0aWFsaXphdGlvbiBmYWlsZWQgLSBOTyBSRVRSWSIpOwogICAgICAgIH0KICAgICAgICBlbHNlIGlmICghcmV0cmllZCkKICAgICAgICB7CiAgICAgICAgICByZXRyaWVkID0gdHJ1ZTsKICAgICAgICAgIENMb2c6OkxvZyhMT0dXQVJOSU5HLCAiQUVTaW5rQVVESU9UUkFDSyAtIFVuYWJsZSB0byBvcGVuIFBUIGRldmljZSAtIHdpbGwgcmV0cnkgb25jZSIpOwogICAgICAgICAgLy8gU2VlbXMgdGhhdCBzb21lIGRldmljZXMgZG9uJ3QgcHJvcGVybHkgaW1wbGVtZW50IHBhdXNlICsgZmx1c2gsIHdoaWNoIGR1cmluZyBzZWVrCiAgICAgICAgICAvLyBtaWdodCBvcGVuIHRoZSBkZXZpY2UgdG9vIGZhc3QgLSBsZXQncyByZXRyeQogICAgICAgICAgdXNsZWVwKDIwMCAqIDEwMDApOwogICAgICAgICAgY29udGludWU7CiAgICAgICAgfQogICAgICB9CicnJwpyZXBsYWNlX29uY2UoQVVESU8sIG9sZCwgbmV3LCAiZGlzYWJsZSBUcnVlSEQgdHVubmVsIHJldHJ5IikKCiMgTG9nIHRoZSBmaXJzdCB0cmFuc2l0aW9uIHRvIFBMQVlJTkcuICBEYXRhIGl0c2VsZiByZW1haW5zIHVudG91Y2hlZC4Kb2xkID0gJycnICBpZiAobV9hdF9qbmktPmdldFBsYXlTdGF0ZSgpICE9IENKTklBdWRpb1RyYWNrOjpQTEFZU1RBVEVfUExBWUlORykKICAgIG1fYXRfam5pLT5wbGF5KCk7CicnJwpuZXcgPSAnJycgIGlmIChtX2F0X2puaS0+Z2V0UGxheVN0YXRlKCkgIT0gQ0pOSUF1ZGlvVHJhY2s6OlBMQVlTVEFURV9QTEFZSU5HKQogIHsKICAgIGlmIChtX2Zvcm1hdC5tX3N0cmVhbUluZm8ubV90eXBlID09IENBRVN0cmVhbUluZm86OlNUUkVBTV9UWVBFX1RSVUVIRCkKICAgICAgQ0xvZzo6TG9nKExPR0lORk8sICJWQUxFUklPTl9EVFNfVFVOTkVMOiBwbGF5KCkgcmVhY2hlZDsgVHJ1ZUhEIGJ5dGVzIGFyZSBiZWluZyBzZW50IG9uIERUUy1IRCBBdWRpb1RyYWNrIik7CiAgICBtX2F0X2puaS0+cGxheSgpOwogIH0KJycnCnJlcGxhY2Vfb25jZShBVURJTywgb2xkLCBuZXcsICJEVFMgdHVubmVsIHBsYXkgZGlhZ25vc3RpY3MiKQoKcHJpbnQoIlZhbGVyaW9uIERUUy1IRCB0dW5uZWwgcGF0Y2ggYXBwbGllZCBzdWNjZXNzZnVsbHkuIikK' | base64 -d > "$RUNNER_TEMP/apply_valerion_dts_tunnel_patch.py"
+          python3 "$RUNNER_TEMP/apply_valerion_dts_tunnel_patch.py" "$GITHUB_WORKSPACE/kodi"
+          git -C kodi diff --check
+          git -C kodi diff > valerion-dts-tunnel-applied.patch
+          grep -n 'VALERION_DTS_TUNNEL' kodi/xbmc/cores/AudioEngine/Sinks/AESinkAUDIOTRACK.cpp
+          grep '^APP_PACKAGE ' kodi/version.txt
+          grep 'Kodi Valerion DTS-HD Tunnel' kodi/tools/android/packaging/xbmc/strings.xml.in
+
+      - name: Create disposable APK signing key
+        shell: bash
+        run: |
+          set -euxo pipefail
+          mkdir -p "$HOME/.android"
+          keytool -genkeypair -noprompt \
+            -keystore "$HOME/.android/debug.keystore" \
+            -alias androiddebugkey \
+            -dname 'CN=Android Debug,O=Android,C=US' \
+            -keypass android -storepass android \
+            -keyalg RSA -keysize 2048 -validity 10000
+          echo "KODI_ANDROID_STORE_FILE=$HOME/.android/debug.keystore" >> "$GITHUB_ENV"
+          echo 'KODI_ANDROID_KEY_ALIAS=androiddebugkey' >> "$GITHUB_ENV"
+          echo 'KODI_ANDROID_KEY_PASSWORD=android' >> "$GITHUB_ENV"
+          echo 'KODI_ANDROID_STORE_PASSWORD=android' >> "$GITHUB_ENV"
+
+      - name: Configure and build Kodi Android dependencies ARMv7
+        shell: bash
+        run: |
+          set -o pipefail
+          mkdir -p logs "$HOME/android-tools/xbmc-tarballs" "$HOME/android-tools/xbmc-depends"
+          cd kodi/tools/depends
+          ./bootstrap 2>&1 | tee "$GITHUB_WORKSPACE/logs/01-bootstrap.log"
+          ./configure \
+            --with-tarballs="$HOME/android-tools/xbmc-tarballs" \
+            --host=arm-linux-androideabi \
+            --with-sdk-path="$ANDROID_SDK_ROOT" \
+            --with-ndk-path="$ANDROID_SDK_ROOT/ndk/$ANDROID_NDK_VERSION" \
+            --prefix="$HOME/android-tools/xbmc-depends" \
+            2>&1 | tee "$GITHUB_WORKSPACE/logs/02-depends-configure.log"
+          make -j"$(nproc)" 2>&1 | tee "$GITHUB_WORKSPACE/logs/03-depends-build.log"
+
+      - name: Configure Kodi CMake build
+        shell: bash
+        run: |
+          set -o pipefail
+          mkdir -p "$HOME/kodi-build"
+          make -C kodi/tools/depends/target/cmakebuildsys \
+            BUILD_DIR="$HOME/kodi-build" \
+            2>&1 | tee logs/04-cmake-configure.log
+
+      - name: Build Kodi and APK
+        shell: bash
+        run: |
+          set -o pipefail
+          make -C "$HOME/kodi-build" -j"$(nproc)" 2>&1 | tee logs/05-kodi-build.log
+          make -C "$HOME/kodi-build" apk 2>&1 | tee logs/06-apk-package.log
+
+      - name: Collect and verify ARMv7 APK
+        shell: bash
+        run: |
+          set -euxo pipefail
+          mkdir -p output
+          mapfile -t apks < <(find "$GITHUB_WORKSPACE/kodi" "$HOME/kodi-build" -type f -name '*.apk' -print | sort -u)
+          if [ "${#apks[@]}" -eq 0 ]; then
+            echo 'No APK was produced.' >&2
+            exit 1
+          fi
+          printf '%s\n' "${apks[@]}" | tee logs/07-apk-list.log
+          n=0
+          for apk in "${apks[@]}"; do
+            n=$((n+1))
+            out="output/Kodi-Valerion-DTS-HD-Tunnel-armv7-${n}.apk"
+            cp "$apk" "$out"
+            unzip -l "$out" | tee "logs/08-apk-contents-${n}.log" | grep -q 'lib/armeabi-v7a/'
+          done
+
+      - name: Upload installable DTS-HD tunnel APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: Kodi-Valerion-DTS-HD-Tunnel-ARMv7
+          path: output/*.apk
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload DTS-HD tunnel patch and build diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Kodi-Valerion-DTS-HD-Tunnel-build-diagnostics
+          path: |
+            kodi-upstream-commit.txt
+            valerion-dts-tunnel-applied.patch
+            logs/
+          if-no-files-found: warn
+          retention-days: 14
