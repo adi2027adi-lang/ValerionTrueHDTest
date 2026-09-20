@@ -1,18 +1,19 @@
 # References: https://developer.android.com/reference/android/media/AudioTrack
 # Kodi base: https://github.com/xbmc/xbmc/tree/9c56bf593441a6c246fdc6931177e71f349ee2bc
-# Diagnostic build, not a confirmed Atmos fix. Same existing modes 0-4; default 1.
-# Mode is latched per track. Restart playback after changing debug.kodi.mat.mode.
-# First input/output block is overwritten in special://temp/valerion-mat-FIX6D-*.bin.
+# Diagnostic build, not a confirmed Atmos fix.
+# FIX7 tests the vendor-discovered MM contract: MediaTek forces MatMlpOnly=1 for InputSource=MM.
+# Kodi keeps the stock RAW TrueHD 24-frame aggregation and opens Android ENCODING_DOLBY_MAT=19.
+# No CPackerMAT transformation is used. The first aggregated MLP/TrueHD block is dumped.
 # Blocking AudioTrack calls can still stall inside Android/vendor code.
 # Package remains org.xbmc.kodi.valerionmat; signing key remains disposable.
-name: Build Kodi Valerion MAT FIX6D Diagnostic
+name: Build Kodi Valerion MAT FIX7 MLP-Only Probe
 
 on:
   workflow_dispatch:
   push:
     paths:
       - '.github/workflows/build-kodi-valerion-mat.yml'
-      - '.github/workflows/build-kodi-valerion-mat-FIX6D.yml'
+      - '.github/workflows/build-kodi-valerion-mat-FIX7.yml'
 
 permissions:
   contents: read
@@ -132,10 +133,10 @@ jobs:
               "MAT test search label",
           )
           
-          # Valerion MAT test build: always use Kodi's IEC-side TrueHD preparation.
-          # This makes CDVDAudioCodecPassthrough use CPackerMAT instead of the RAW TrueHD
-          # 24-frame aggregation path. The package is separate from stock Kodi, so this
-          # diagnostic override is isolated to the test app.
+          # FIX7: use Kodi's stock RAW TrueHD preparation.
+          # CDVDAudioCodecPassthrough::PackTrueHD() aggregates 24 raw TrueHD/MLP frames.
+          # This deliberately avoids CPackerMAT because the Valerion MM pipeline itself forces
+          # the vendor-private decoder parameter MatMlpOnly=1.
           replace_once(
               PROCESS,
               """bool CProcessInfoAndroid::WantsRawPassthrough()
@@ -151,42 +152,25 @@ jobs:
           """,
               """bool CProcessInfoAndroid::WantsRawPassthrough()
           {
-            return false;
+            return true;
           }
           """,
-              "force Kodi MAT preparation for Valerion test",
+              "FIX7 force stock RAW TrueHD aggregation",
           )
           
-          
-          # FIX6D: Android system-property API used by the runtime mode selector.
-          replace_once(
-              AUDIO,
-              """#include <androidjni/AudioTrack.h>
-          #include <androidjni/Build.h>
-          #include <unistd.h>
-          """,
-              """#include <androidjni/AudioTrack.h>
-          #include <androidjni/Build.h>
-          #include <sys/system_properties.h>
-          #include <unistd.h>
-          """,
-              "FIX6D Android system property include",
-          )
-          
-          # FIX6D: keep the sink on the RAW bookkeeping path for TrueHD.
-          # CPackerMAT is already produced earlier because WantsRawPassthrough() is forced false.
-          # This avoids the FIX3/FIX4 frame-unit mismatch (RAW bytes upstream vs 16-byte IEC frames downstream).
+          # FIX7: keep the sink on the RAW bookkeeping path for TrueHD.
+          # Upstream supplies Kodi's stock 24-frame raw TrueHD/MLP aggregation.
           replace_once(
               AUDIO,
               '  // try to recover used device\n  if (!m_hasIEC)\n    m_info = m_info_raw;\n  else if (device == "Default" && !m_info.m_wantsIECPassthrough)\n    m_info = m_info_raw;\n  else if (device == "AudioTrack (RAW)")\n    m_info = m_info_raw;\n  else\n    m_info = m_info_iec;\n\n  m_format      = format;\n',
-              '  // Valerion MAT FIX6D: TrueHD test must use RAW bookkeeping semantics.\n'
+              '  // Valerion MAT FIX7: MLP-only probe uses RAW bookkeeping semantics.\n'
               '  const bool valerionTrueHDTest =\n'
               '      format.m_dataFormat == AE_FMT_RAW &&\n'
               '      format.m_streamInfo.m_type == CAEStreamInfo::STREAM_TYPE_TRUEHD;\n\n'
               '  if (valerionTrueHDTest)\n'
               '  {\n'
               '    m_info = m_info_raw;\n'
-              '    CLog::Log(LOGINFO, "VALERION_MAT: FIX6D forcing RAW sink capability for TrueHD");\n'
+              '    CLog::Log(LOGINFO, "VALERION_MAT: FIX7 forcing RAW sink capability for TrueHD");\n'
               '  }\n'
               '  else if (!m_hasIEC)\n'
               '    m_info = m_info_raw;\n'
@@ -197,10 +181,10 @@ jobs:
               '  else\n'
               '    m_info = m_info_iec;\n\n'
               '  m_format      = format;\n',
-              "FIX6D force RAW sink semantics for TrueHD",
+              "FIX7 force RAW sink semantics for TrueHD",
           )
           
-          # FIX6D: ActiveAE must NOT run the late IEC61937 packer for this isolated TrueHD test,
+          # FIX7: ActiveAE must NOT run the late IEC61937 packer for this isolated TrueHD test,
           # regardless of which passthrough device Kodi auto-selected in settings.
           replace_once(
               ACTIVE,
@@ -224,7 +208,7 @@ jobs:
           
               if (valerionTrueHDTest)
                 CLog::Log(LOGINFO,
-                          "VALERION_MAT: FIX6D ActiveAE forcing m_needIecPack=false for TrueHD");
+                          "VALERION_MAT: FIX7 ActiveAE forcing m_needIecPack=false for TrueHD");
               else if (m_needIecPack)
               {
                 m_packer = std::make_unique<CAEBitstreamPacker>();
@@ -235,7 +219,7 @@ jobs:
               }
             }
           """,
-              "FIX6D disable late IEC packing for TrueHD",
+              "FIX7 disable late IEC packing for TrueHD",
           )
           
           # Android public API AudioFormat.ENCODING_DOLBY_MAT == 19 (API 29+).
@@ -244,13 +228,11 @@ jobs:
               "const unsigned int TRUEHD_SIZE = 61440;\n",
               '''const unsigned int TRUEHD_SIZE = 61440;
           constexpr int VALERION_ENCODING_DOLBY_MAT = 19;
-          constexpr unsigned int VALERION_MAT_RESERVED = 8;
-          constexpr unsigned int VALERION_MAT_PAYLOAD = TRUEHD_SIZE - VALERION_MAT_RESERVED;
           ''',
-              "FIX6D MAT constants",
+              "FIX7 MAT encoding constant",
           )
           
-          # FIX6D: native Android MAT on the RAW bookkeeping path.
+          # FIX7: declare Android MAT while keeping the stock RAW TrueHD/MLP payload.
           replace_once(
               AUDIO,
               """    m_passthrough = true;
@@ -263,21 +245,21 @@ jobs:
               if (m_format.m_streamInfo.m_type == CAEStreamInfo::STREAM_TYPE_TRUEHD)
               {
                 m_encoding = VALERION_ENCODING_DOLBY_MAT;
-                CLog::Log(LOGINFO, "VALERION_MAT: BEGIN FIX6D RAW-MAT MULTIMODE");
+                CLog::Log(LOGINFO, "VALERION_MAT: BEGIN FIX7 MM-MAT MLP-ONLY PROBE");
                 CLog::Log(LOGINFO,
-                          "VALERION_MAT: codec=TrueHD androidEncoding={} lateIecPack=DISABLED",
+                          "VALERION_MAT: payload=stock-RAW-TrueHD/MLP androidEncoding={} lateIecPack=DISABLED",
                           m_encoding);
               }
           
               m_format.m_channelLayout = AE_CH_LAYOUT_2_0;
           """,
-              "FIX6D select Android Dolby MAT on RAW TrueHD path",
+              "FIX7 select Android Dolby MAT with RAW TrueHD payload",
           )
           
-          # FIX6D multi-mode native MAT writer.
-          # Input must be one original 61440-byte CPackerMAT frame:
-          # [8 reserved zero bytes] + [MAT starts at 07 9E 00 03 ...].
-          # No IEC61937 scanner and no assumed IEC byte swap.
+          # FIX7 MLP-only writer.
+          # Upstream is stock Kodi RAW TrueHD: PackTrueHD() groups 24 parsed TrueHD/MLP frames.
+          # The byte block is passed unchanged to AudioTrack ENCODING_DOLBY_MAT=19.
+          # This directly probes Valerion's MM pipeline contract: filter "Mat" + MatMlpOnly=1.
           old = '''  else if (m_jniAudioFormat == CJNIAudioFormat::ENCODING_IEC61937)
             {
               if (m_shortbuf.size() < (sizeInBytes - offsetInBytes) / sizeof(int16_t))
@@ -296,192 +278,95 @@ jobs:
               if (offsetInBytes < 0 || sizeInBytes < offsetInBytes || !audioData)
               {
                 m_valerionMatFailed = true;
-                CLog::Log(LOGERROR, "VALERION_MAT: FIX6D invalid input arguments");
+                CLog::Log(LOGERROR, "VALERION_MAT: FIX7 invalid input arguments");
                 return -1;
               }
+
               const int inputSize = sizeInBytes - offsetInBytes;
               if (inputSize == 0)
                 return 0;
-              if (inputSize != static_cast<int>(TRUEHD_SIZE))
-              {
-                m_valerionMatFailed = true;
-                CLog::Log(LOGERROR,
-                          "VALERION_MAT: FIX6D inputSize={} expected={} STOP; no raw fallback",
-                          inputSize, TRUEHD_SIZE);
-                return -1;
-              }
-              const unsigned char* src =
-                  reinterpret_cast<const unsigned char*>(audioData + offsetInBytes);
-              if (m_valerionMatMode < 0)
-              {
-                char propVal[PROP_VALUE_MAX] = {0};
-                __system_property_get("debug.kodi.mat.mode", propVal);
-                m_valerionMatMode = 1;
-                if (propVal[0] >= '0' && propVal[0] <= '4' && propVal[1] == 0)
-                  m_valerionMatMode = propVal[0] - '0';
-                CLog::Log(LOGINFO, "VALERION_MAT: FIX6D mode={} latched for this AudioTrack",
-                          m_valerionMatMode);
-              }
-              const int mode = m_valerionMatMode;
-          
-              const bool hasExpectedHeader =
-                  src[0] == 0x00 && src[1] == 0x00 && src[2] == 0x00 && src[3] == 0x00 &&
-                  src[4] == 0x00 && src[5] == 0x00 && src[6] == 0x00 && src[7] == 0x00 &&
-                  src[8] == 0x07 && src[9] == 0x9E && src[10] == 0x00 && src[11] == 0x03;
-          
+
+              if (static_cast<int>(m_charbuf.size()) < inputSize)
+                m_charbuf.resize(inputSize);
+              memcpy(m_charbuf.data(), audioData + offsetInBytes, inputSize);
+
               const bool diagnosticThisCall = ((m_valerionMatCalls++ & 0x3f) == 0);
-              if (!hasExpectedHeader)
-              {
-                m_valerionMatFailed = true;
-                CLog::Log(LOGERROR,
-                          "VALERION_MAT: FIX6D CPackerMAT signature missing STOP; no mode fallback");
-                return -1;
-              }
-          
               if (diagnosticThisCall)
               {
-                CLog::Log(LOGINFO,
-                          "VALERION_MAT: FIX6D mode={} inSize={} "
-                          "in16={:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} "
-                          "{:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x}",
-                          mode, inputSize,
-                          static_cast<unsigned int>(src[0]), static_cast<unsigned int>(src[1]),
-                          static_cast<unsigned int>(src[2]), static_cast<unsigned int>(src[3]),
-                          static_cast<unsigned int>(src[4]), static_cast<unsigned int>(src[5]),
-                          static_cast<unsigned int>(src[6]), static_cast<unsigned int>(src[7]),
-                          static_cast<unsigned int>(src[8]), static_cast<unsigned int>(src[9]),
-                          static_cast<unsigned int>(src[10]), static_cast<unsigned int>(src[11]),
-                          static_cast<unsigned int>(src[12]), static_cast<unsigned int>(src[13]),
-                          static_cast<unsigned int>(src[14]), static_cast<unsigned int>(src[15]));
-              }
-          
-              int outputSize = TRUEHD_SIZE;
-              if (m_charbuf.size() < TRUEHD_SIZE)
-                m_charbuf.resize(TRUEHD_SIZE);
-          
-              if (mode == 1)
-              {
-                // Existing mode 1 representation; native MAT compatibility remains unproven.
-                memcpy(m_charbuf.data(), src + VALERION_MAT_RESERVED, VALERION_MAT_PAYLOAD);
-                outputSize = VALERION_MAT_PAYLOAD; // 61432
-              }
-              else if (mode == 2)
-              {
-                // Shift MAT to byte 0 but retain a 61440-byte write by padding 8 zeros at the end.
-                memcpy(m_charbuf.data(), src + VALERION_MAT_RESERVED, VALERION_MAT_PAYLOAD);
-                memset(m_charbuf.data() + VALERION_MAT_PAYLOAD, 0, VALERION_MAT_RESERVED);
-                outputSize = TRUEHD_SIZE;
-              }
-              else if (mode == 3)
-              {
-                // Counter-test: skip 8 and 16-bit swap the 61432-byte payload.
-                unsigned char* dst = reinterpret_cast<unsigned char*>(m_charbuf.data());
-                for (unsigned int i = 0; i < VALERION_MAT_PAYLOAD; i += 2)
-                {
-                  dst[i] = src[VALERION_MAT_RESERVED + i + 1];
-                  dst[i + 1] = src[VALERION_MAT_RESERVED + i];
-                }
-                outputSize = VALERION_MAT_PAYLOAD;
-              }
-              else if (mode == 4)
-              {
-                // Counter-test: preserve the 8 leading zeros, swap only bytes 8..61439.
-                memcpy(m_charbuf.data(), src, VALERION_MAT_RESERVED);
-                unsigned char* dst = reinterpret_cast<unsigned char*>(m_charbuf.data());
-                for (unsigned int i = 0; i < VALERION_MAT_PAYLOAD; i += 2)
-                {
-                  dst[VALERION_MAT_RESERVED + i] =
-                      src[VALERION_MAT_RESERVED + i + 1];
-                  dst[VALERION_MAT_RESERVED + i + 1] =
-                      src[VALERION_MAT_RESERVED + i];
-                }
-                outputSize = TRUEHD_SIZE;
-              }
-              else
-              {
-                // Mode 0: exact CPackerMAT frame untouched.
-                memcpy(m_charbuf.data(), src, TRUEHD_SIZE);
-                outputSize = TRUEHD_SIZE;
-              }
-          
-              if (diagnosticThisCall)
-              {
-                const unsigned char* out =
+                const unsigned char* in =
                     reinterpret_cast<const unsigned char*>(m_charbuf.data());
                 CLog::Log(LOGINFO,
-                          "VALERION_MAT: FIX6D mode={} outSize={} "
-                          "out16={:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} "
-                          "{:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x}",
-                          mode, outputSize,
-                          static_cast<unsigned int>(out[0]), static_cast<unsigned int>(out[1]),
-                          static_cast<unsigned int>(out[2]), static_cast<unsigned int>(out[3]),
-                          static_cast<unsigned int>(out[4]), static_cast<unsigned int>(out[5]),
-                          static_cast<unsigned int>(out[6]), static_cast<unsigned int>(out[7]),
-                          static_cast<unsigned int>(out[8]), static_cast<unsigned int>(out[9]),
-                          static_cast<unsigned int>(out[10]), static_cast<unsigned int>(out[11]),
-                          static_cast<unsigned int>(out[12]), static_cast<unsigned int>(out[13]),
-                          static_cast<unsigned int>(out[14]), static_cast<unsigned int>(out[15]));
+                          "VALERION_MAT: FIX7 raw-MLP inputBytes={} head={:02x} {:02x} {:02x} {:02x} "
+                          "{:02x} {:02x} {:02x} {:02x}",
+                          inputSize,
+                          inputSize > 0 ? static_cast<unsigned int>(in[0]) : 0,
+                          inputSize > 1 ? static_cast<unsigned int>(in[1]) : 0,
+                          inputSize > 2 ? static_cast<unsigned int>(in[2]) : 0,
+                          inputSize > 3 ? static_cast<unsigned int>(in[3]) : 0,
+                          inputSize > 4 ? static_cast<unsigned int>(in[4]) : 0,
+                          inputSize > 5 ? static_cast<unsigned int>(in[5]) : 0,
+                          inputSize > 6 ? static_cast<unsigned int>(in[6]) : 0,
+                          inputSize > 7 ? static_cast<unsigned int>(in[7]) : 0);
               }
-          
-              // One bounded capture per AudioTrack. This is diagnostic data, not a validity claim.
+
               if (!m_valerionMatDumped)
               {
                 m_valerionMatDumped = true;
-                auto dump = [](const std::string& path, const void* bytes, size_t length)
+                XFILE::CFile file;
+                const std::string path = "special://temp/valerion-mat-FIX7-mlp.bin";
+                if (!file.OpenForWrite(path, true))
                 {
-                  XFILE::CFile file;
-                  if (!file.OpenForWrite(path, true))
-                  {
-                    CLog::Log(LOGERROR, "VALERION_MAT: FIX6D dump open failed {}", path);
-                    return;
-                  }
+                  CLog::Log(LOGERROR, "VALERION_MAT: FIX7 dump open failed {}", path);
+                }
+                else
+                {
                   size_t done = 0;
-                  while (done < length)
+                  while (done < static_cast<size_t>(inputSize))
                   {
-                    const auto n = file.Write(static_cast<const char*>(bytes) + done, length - done);
-                    if (n <= 0 || static_cast<size_t>(n) > length - done)
+                    const auto n = file.Write(m_charbuf.data() + done,
+                                              static_cast<size_t>(inputSize) - done);
+                    if (n <= 0 || static_cast<size_t>(n) > static_cast<size_t>(inputSize) - done)
                       break;
                     done += static_cast<size_t>(n);
                   }
                   file.Close();
-                  CLog::Log(LOGINFO, "VALERION_MAT: FIX6D dump {} bytes={}/{} complete={}",
-                            path, done, length, done == length);
-                };
-                dump("special://temp/valerion-mat-FIX6D-input.bin", src, inputSize);
-                dump("special://temp/valerion-mat-FIX6D-output.bin", m_charbuf.data(), outputSize);
+                  CLog::Log(LOGINFO,
+                            "VALERION_MAT: FIX7 dump {} bytes={}/{} complete={}",
+                            path, done, inputSize, done == static_cast<size_t>(inputSize));
+                }
               }
-          
+
               const uint64_t writeStart = CurrentHostCounter();
-              int matWritten = 0;
+              int accepted = 0;
               unsigned int writeCalls = 0;
-              while (matWritten < outputSize)
+              while (accepted < inputSize)
               {
-                // Continue from the output byte offset, never resubmit an accepted prefix.
-                const int n = m_at_jni->write(m_charbuf, matWritten, outputSize - matWritten,
+                const int n = m_at_jni->write(m_charbuf, accepted, inputSize - accepted,
                                               CJNIAudioTrack::WRITE_BLOCKING);
                 ++writeCalls;
-                if (n == 0 && matWritten == 0)
-                  return 0; // Existing AddPackets zero-progress retry; nothing consumed.
-                if (n <= 0 || n > outputSize - matWritten)
+                if (n == 0 && accepted == 0)
+                  return 0;
+                if (n <= 0 || n > inputSize - accepted)
                 {
                   m_valerionMatFailed = true;
                   CLog::Log(LOGERROR,
-                            "VALERION_MAT: FIX6D write stopped accepted={} expected={} result={} STOP",
-                            matWritten, outputSize, n);
-                  return -1; // Do not replay a partly submitted frame on this track.
+                            "VALERION_MAT: FIX7 write stopped accepted={} expected={} result={} STOP",
+                            accepted, inputSize, n);
+                  return -1;
                 }
-                matWritten += n;
+                accepted += n;
               }
+
               if (diagnosticThisCall || writeCalls > 1)
               {
-                const double writeMs = 1000.0 * (CurrentHostCounter() - writeStart) / CurrentHostFrequency();
+                const double writeMs =
+                    1000.0 * (CurrentHostCounter() - writeStart) / CurrentHostFrequency();
                 CLog::Log(LOGINFO,
-                          "VALERION_MAT: FIX6D mode={} inputBytes={} outputBytes={} result={} calls={} writeMs={} head={} durationMs={}",
-                          mode, inputSize, outputSize, matWritten, writeCalls, writeMs,
+                          "VALERION_MAT: FIX7 inputBytes={} result={} calls={} writeMs={} headPos={} durationMs={}",
+                          inputSize, accepted, writeCalls, writeMs,
                           m_at_jni->getPlaybackHeadPosition(), m_duration_written * 1000.0);
               }
-          
-              // All ORIGINAL 61440 input bytes were consumed even when Mode 1/3 emits 61432.
+
               written = inputSize;
             }
             else if (m_jniAudioFormat == CJNIAudioFormat::ENCODING_IEC61937)
@@ -494,7 +379,7 @@ jobs:
               written *= sizeof(uint16_t);
             }
           '''
-          replace_once(AUDIO, old, new, "FIX6D runtime native MAT multi-mode writer")
+          replace_once(AUDIO, old, new, "FIX7 raw MLP payload writer")
           
           # Log Android's buffer query and AudioTrack state around the single creation attempt.
           old = '''    m_min_buffer_size = (unsigned int) min_buffer;
@@ -512,7 +397,7 @@ jobs:
           '''
           replace_once(AUDIO, old, new, "MAT min buffer diagnostics")
           
-          # FIX6D: keep Kodi's STOCK RAW TrueHD geometry.
+          # FIX7: keep Kodi's STOCK RAW TrueHD geometry.
           # The RAW branch should produce frameSize=1, frames=61440 and buffer=122880.
           old = '''    if (m_passthrough && !m_info.m_wantsIECPassthrough)
                 m_audiotrackbuffer_sec = rawlength_in_seconds;
@@ -528,14 +413,14 @@ jobs:
                   m_format.m_streamInfo.m_type == CAEStreamInfo::STREAM_TYPE_TRUEHD)
               {
                 CLog::Log(LOGINFO,
-                          "VALERION_MAT: FIX6D geometry method=RAW frameSize={} frames={} buffer={} rate={} channels={}",
+                          "VALERION_MAT: FIX7 geometry method=RAW frameSize={} frames={} buffer={} rate={} channels={}",
                           m_format.m_frameSize, m_format.m_frames, m_min_buffer_size,
                           m_sink_sampleRate, m_format.m_channelLayout.Count());
           
                 if (m_format.m_frameSize != 1 || m_format.m_frames != TRUEHD_SIZE)
                 {
                   CLog::Log(LOGERROR,
-                            "VALERION_MAT: FIX6D unsafe geometry - refusing MAT test");
+                            "VALERION_MAT: FIX7 unsafe geometry - refusing probe");
                   return false;
                 }
               }
@@ -544,7 +429,7 @@ jobs:
                         "Created Audiotrackbuffer with playing time of {:f} ms min buffer size: {} bytes",
                         m_audiotrackbuffer_sec * 1000, m_min_buffer_size);
           '''
-          replace_once(AUDIO, old, new, "FIX6D preserve and verify RAW MAT geometry")
+          replace_once(AUDIO, old, new, "FIX7 preserve and verify RAW geometry")
           
           old = '''    m_jniAudioFormat = m_encoding;
               m_at_jni = CreateAudioTrack(stream, m_sink_sampleRate, atChannelMask,
@@ -557,7 +442,7 @@ jobs:
                   m_format.m_streamInfo.m_type == CAEStreamInfo::STREAM_TYPE_TRUEHD)
               {
                 CLog::Log(LOGINFO,
-                          "VALERION_MAT: FIX6D creating AudioTrack requestedBuffer={} mode=STREAM",
+                          "VALERION_MAT: FIX7 creating AudioTrack requestedBuffer={} mode=STREAM",
                           m_min_buffer_size);
               }
               m_at_jni = CreateAudioTrack(stream, m_sink_sampleRate, atChannelMask,
@@ -567,7 +452,7 @@ jobs:
                   m_format.m_streamInfo.m_type == CAEStreamInfo::STREAM_TYPE_TRUEHD)
               {
                 const int state = m_at_jni ? m_at_jni->getState() : -1;
-                CLog::Log(LOGINFO, "VALERION_MAT: FIX6D AudioTrack state={}", state);
+                CLog::Log(LOGINFO, "VALERION_MAT: FIX7 AudioTrack state={}", state);
               }
           
               if (!IsInitialized())
@@ -618,40 +503,37 @@ jobs:
               {
                 if (m_jniAudioFormat == VALERION_ENCODING_DOLBY_MAT &&
                     m_format.m_streamInfo.m_type == CAEStreamInfo::STREAM_TYPE_TRUEHD)
-                  CLog::Log(LOGINFO, "VALERION_MAT: FIX6D play() reached");
+                  CLog::Log(LOGINFO, "VALERION_MAT: FIX7 play() reached");
                 m_at_jni->play();
               }
           '''
           replace_once(AUDIO, old, new, "MAT play diagnostics")
           
-          print("Valerion direct MAT patch FIX6D applied successfully (RAW geometry + runtime modes 0-4).")
+          print("Valerion MAT FIX7 MLP-only probe applied successfully (stock RAW TrueHD payload + encoding 19).")
           
           HEADER = ROOT / "xbmc/cores/AudioEngine/Sinks/AESinkAUDIOTRACK.h"
           replace_once(AUDIO, '#include "ServiceBroker.h"\n',
-                       '#include "ServiceBroker.h"\n#include "filesystem/File.h"\n', "FIX6D dump API")
+                       '#include "ServiceBroker.h"\n#include "filesystem/File.h"\n', "FIX7 dump API")
           replace_once(HEADER, '  std::vector<char> m_charbuf;\n',
-                       '  int m_valerionMatMode = -1;\n'
                        '  bool m_valerionMatFailed = false;\n'
                        '  bool m_valerionMatDumped = false;\n'
                        '  unsigned int m_valerionMatCalls = 0;\n'
-                       '  std::vector<char> m_charbuf;\n', "FIX6D per-track diagnostic state")
+                       '  std::vector<char> m_charbuf;\n', "FIX7 per-track diagnostic state")
           replace_once(AUDIO,
                        'bool CAESinkAUDIOTRACK::Initialize(AEAudioFormat &format, std::string &device)\n{\n',
                        'bool CAESinkAUDIOTRACK::Initialize(AEAudioFormat &format, std::string &device)\n{\n'
-                       '  m_valerionMatMode = -1;\n'
                        '  m_valerionMatFailed = false;\n'
                        '  m_valerionMatDumped = false;\n'
-                       '  m_valerionMatCalls = 0;\n', "FIX6D reset state on initialization")
+                       '  m_valerionMatCalls = 0;\n', "FIX7 reset state on initialization")
           VALERION_PATCH
           python3 "$RUNNER_TEMP/apply_valerion_mat_patch.py" "$GITHUB_WORKSPACE/kodi"
           cp "$RUNNER_TEMP/apply_valerion_mat_patch.py" valerion-mat-patcher.py
           git -C kodi diff --check
           git -C kodi diff > valerion-mat-applied.patch
           grep -a -n 'VALERION_MAT' kodi/xbmc/cores/AudioEngine/Sinks/AESinkAUDIOTRACK.cpp
-          grep -a -n 'FIX6D ActiveAE' kodi/xbmc/cores/AudioEngine/Engines/ActiveAE/ActiveAESink.cpp
-          grep -a -n 'debug.kodi.mat.mode' kodi/xbmc/cores/AudioEngine/Sinks/AESinkAUDIOTRACK.cpp
-          grep -a -n 'sys/system_properties.h' kodi/xbmc/cores/AudioEngine/Sinks/AESinkAUDIOTRACK.cpp
-          grep -n 'return false;' kodi/xbmc/cores/VideoPlayer/Process/android/ProcessInfoAndroid.cpp
+          grep -a -n 'FIX7 ActiveAE' kodi/xbmc/cores/AudioEngine/Engines/ActiveAE/ActiveAESink.cpp
+          grep -a -n 'raw-MLP inputBytes' kodi/xbmc/cores/AudioEngine/Sinks/AESinkAUDIOTRACK.cpp
+          grep -a -n 'return true;' kodi/xbmc/cores/VideoPlayer/Process/android/ProcessInfoAndroid.cpp
           grep '^APP_PACKAGE ' kodi/version.txt
           grep 'Kodi Valerion MAT Test' kodi/tools/android/packaging/xbmc/strings.xml.in
 
